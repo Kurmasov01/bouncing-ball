@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bouncing Ball Feel Toy</title>
+  <style>
+    :root {
+      --bg-top: #16202a;
+      --bg-mid: #1f2a35;
+      --bg-bottom: #0e141a;
+      --floor: #2c3138;
+      --text: #f3eee7;
+      --accent: #ff7a59;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: Georgia, "Times New Roman", serif;
+      background:
+        radial-gradient(circle at 18% 16%, rgba(255, 171, 122, 0.18), transparent 24%),
+        radial-gradient(circle at 80% 18%, rgba(140, 186, 215, 0.14), transparent 30%),
+        radial-gradient(circle at 50% 115%, rgba(255, 234, 210, 0.08), transparent 38%),
+        linear-gradient(180deg, var(--bg-top) 0%, var(--bg-mid) 42%, var(--bg-bottom) 100%);
+      color: var(--text);
+    }
+
+    canvas {
+      display: block;
+    }
+
+    .hud {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      z-index: 1;
+      padding: 14px 16px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      background: rgba(15, 20, 26, 0.5);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+    }
+
+    .hud h1 {
+      margin: 0 0 6px;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .hud p {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.4;
+      max-width: 260px;
+    }
+
+    .hint {
+      color: rgba(243, 238, 231, 0.7);
+    }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <h1>Bouncing Ball</h1>
+    <p>Click the sphere to kick it upward and drag to orbit the camera.</p>
+    <p class="hint">Built as a feel-based interaction toy with custom physics and squash-and-stretch.</p>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.184.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.184.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+    const world = {
+      gravity: -22,
+      bounce: 0.72,
+      radius: 0.65,
+      floorY: 0,
+      impulse: 7.2,
+      airborneImpulse: 5.4,
+      minBounceVelocity: 0.55,
+      drag: 0.15,
+      restingEpsilon: 0.02,
+      maxStep: 1 / 30,
+    };
+
+    const ballState = {
+      y: 2.4,
+      velocity: 0,
+      impact: 0,
+      squashReturn: 10,
+    };
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x131a21, 13, 32);
+
+    const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 4.6, 8.8);
+    camera.lookAt(0, 1.3, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.065;
+    controls.enablePan = false;
+    controls.minDistance = 5.5;
+    controls.maxDistance = 12;
+    controls.minPolarAngle = 0.7;
+    controls.maxPolarAngle = 1.45;
+    controls.target.set(0, 1.65, 0);
+    controls.update();
+    const followTarget = new THREE.Vector3(0, 1.65, 0);
+    const desiredCameraPosition = new THREE.Vector3();
+    const orbitOffset = new THREE.Vector3();
+    const orbitSpherical = new THREE.Spherical();
+
+    const ambientLight = new THREE.AmbientLight(0xcbd6e2, 1.15);
+    scene.add(ambientLight);
+
+    const sunLight = new THREE.DirectionalLight(0xffe2c4, 1.85);
+    sunLight.position.set(5.2, 8.6, 4.2);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.set(1024, 1024);
+    sunLight.shadow.radius = 4;
+    sunLight.shadow.bias = -0.0008;
+    sunLight.shadow.camera.left = -8;
+    sunLight.shadow.camera.right = 8;
+    sunLight.shadow.camera.top = 8;
+    sunLight.shadow.camera.bottom = -8;
+    sunLight.shadow.camera.near = 0.5;
+    sunLight.shadow.camera.far = 22;
+    scene.add(sunLight);
+
+    const rimLight = new THREE.DirectionalLight(0x92b8da, 0.55);
+    rimLight.position.set(-5, 4, -3);
+    scene.add(rimLight);
+
+    const skyGlow = new THREE.Mesh(
+      new THREE.SphereGeometry(22, 48, 48),
+      new THREE.MeshBasicMaterial({
+        color: 0xffb37a,
+        transparent: true,
+        opacity: 0.08,
+        side: THREE.BackSide,
+      })
+    );
+    skyGlow.position.y = 5;
+    scene.add(skyGlow);
+
+    const floorMaterial = new THREE.MeshStandardMaterial({
+      color: 0x2b3138,
+      roughness: 0.96,
+      metalness: 0.02,
+    });
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(14, 96), floorMaterial);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = world.floorY;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    const floorHalo = new THREE.Mesh(
+      new THREE.RingGeometry(8.8, 14.6, 96),
+      new THREE.MeshBasicMaterial({
+        color: 0x53606d,
+        transparent: true,
+        opacity: 0.2,
+        side: THREE.DoubleSide,
+      })
+    );
+    floorHalo.rotation.x = -Math.PI / 2;
+    floorHalo.position.y = world.floorY + 0.002;
+    scene.add(floorHalo);
+
+    const ballGroup = new THREE.Group();
+    scene.add(ballGroup);
+
+    const ballMaterial = new THREE.MeshStandardMaterial({
+      color: 0xff7a59,
+      roughness: 0.38,
+      metalness: 0.06,
+    });
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(world.radius, 64, 64), ballMaterial);
+    ball.castShadow = true;
+    ball.receiveShadow = true;
+    ballGroup.add(ball);
+
+    const contactShadowTexture = makeShadowTexture();
+    const shadowMaterial = new THREE.MeshBasicMaterial({
+      map: contactShadowTexture,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.28,
+      color: 0x1f2124,
+    });
+    const contactShadow = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 2.8), shadowMaterial);
+    contactShadow.rotation.x = -Math.PI / 2;
+    contactShadow.position.y = world.floorY + 0.01;
+    scene.add(contactShadow);
+
+    const clickBurstMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffc89e,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    });
+    const clickBurst = new THREE.Mesh(new THREE.RingGeometry(0.24, 0.36, 64), clickBurstMaterial);
+    clickBurst.position.y = ballState.y;
+    clickBurst.scale.setScalar(0.7);
+    scene.add(clickBurst);
+
+    const clickSparkMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffd7b8,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const clickSparks = new THREE.Group();
+    const sparkData = [];
+    for (let i = 0; i < 8; i += 1) {
+      const spark = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.45), clickSparkMaterial);
+      spark.position.y = ballState.y;
+      spark.scale.set(0.7, 0.7, 0.7);
+      clickSparks.add(spark);
+      sparkData.push({
+        mesh: spark,
+        angle: (i / 8) * Math.PI * 2,
+      });
+    }
+    scene.add(clickSparks);
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const timer = new THREE.Timer();
+    let clickFlash = 0;
+
+    function makeShadowTexture() {
+      const size = 256;
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext("2d");
+      const gradient = context.createRadialGradient(size / 2, size / 2, size * 0.06, size / 2, size / 2, size * 0.48);
+      gradient.addColorStop(0, "rgba(0, 0, 0, 0.5)");
+      gradient.addColorStop(0.55, "rgba(0, 0, 0, 0.22)");
+      gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, size, size);
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      return texture;
+    }
+
+    function applyImpulse() {
+      const nearGround = ballState.y <= world.radius + 0.08 && Math.abs(ballState.velocity) < 1.2;
+      const impulse = nearGround ? world.impulse : world.airborneImpulse;
+      ballState.velocity = Math.max(ballState.velocity + impulse, impulse);
+      ballState.impact = Math.max(ballState.impact, nearGround ? 0.22 : 0.1);
+      clickFlash = 1;
+    }
+
+    function updatePhysics(deltaTime) {
+      const step = Math.min(deltaTime, world.maxStep);
+
+      ballState.velocity += world.gravity * step;
+      ballState.velocity *= 1 - world.drag * step;
+      ballState.y += ballState.velocity * step;
+
+      const minHeight = world.floorY + world.radius;
+      if (ballState.y <= minHeight) {
+        ballState.y = minHeight;
+
+        if (ballState.velocity < 0) {
+          const impactSpeed = Math.abs(ballState.velocity);
+          ballState.velocity *= -world.bounce;
+          ballState.impact = Math.min(1, impactSpeed / 14);
+
+          if (Math.abs(ballState.velocity) < world.minBounceVelocity) {
+            ballState.velocity = 0;
+          }
+        }
+      }
+
+      ballState.impact = THREE.MathUtils.lerp(ballState.impact, 0, 1 - Math.exp(-ballState.squashReturn * step));
+
+      if (ballState.y <= minHeight + world.restingEpsilon && Math.abs(ballState.velocity) < world.restingEpsilon) {
+        ballState.y = minHeight;
+        ballState.velocity = 0;
+      }
+    }
+
+    function updateVisuals(deltaTime) {
+      ballGroup.position.y = ballState.y;
+
+      const normalizedVelocity = THREE.MathUtils.clamp(ballState.velocity / 10, -1, 1);
+      const airborneStretch = Math.abs(normalizedVelocity) * 0.18;
+      const impactSquash = ballState.impact * 0.35;
+
+      let targetScaleY = 1;
+      let targetScaleXZ = 1;
+
+      if (ballState.y <= world.radius + 0.02 && ballState.impact > 0.02) {
+        targetScaleY -= impactSquash;
+        targetScaleXZ += impactSquash * 0.55;
+      } else if (Math.abs(ballState.velocity) > 0.05) {
+        targetScaleY += airborneStretch;
+        targetScaleXZ -= airborneStretch * 0.45;
+      }
+
+      const easing = 1 - Math.exp(-14 * deltaTime);
+      ball.scale.y = THREE.MathUtils.lerp(ball.scale.y, targetScaleY, easing);
+      ball.scale.x = THREE.MathUtils.lerp(ball.scale.x, targetScaleXZ, easing);
+      ball.scale.z = THREE.MathUtils.lerp(ball.scale.z, targetScaleXZ, easing);
+
+      const height = Math.max(0, ballState.y - world.radius - world.floorY);
+      const shadowScale = THREE.MathUtils.lerp(1.2, 0.62, THREE.MathUtils.clamp(height / 6, 0, 1));
+      const shadowOpacity = THREE.MathUtils.lerp(0.28, 0.07, THREE.MathUtils.clamp(height / 5.5, 0, 1));
+      contactShadow.scale.setScalar(shadowScale + ballState.impact * 0.12);
+      contactShadow.material.opacity = shadowOpacity;
+
+      clickFlash = THREE.MathUtils.lerp(clickFlash, 0, 1 - Math.exp(-8.5 * deltaTime));
+      clickBurst.position.set(0, ballState.y, 0);
+      clickBurst.lookAt(camera.position);
+      clickBurst.scale.setScalar(THREE.MathUtils.lerp(0.76, 2.7, 1 - clickFlash));
+      clickBurst.material.opacity = 0.34 * clickFlash;
+
+      clickSparks.position.set(0, ballState.y, 0);
+      sparkData.forEach((spark, index) => {
+        const radius = THREE.MathUtils.lerp(0.28, 1.15, 1 - clickFlash);
+        spark.mesh.position.x = Math.cos(spark.angle) * radius;
+        spark.mesh.position.z = Math.sin(spark.angle) * radius;
+        spark.mesh.position.y = Math.sin(spark.angle * 1.3 + (1 - clickFlash) * Math.PI) * 0.22;
+        spark.mesh.lookAt(camera.position);
+        spark.mesh.rotateZ(spark.angle);
+        const scale = THREE.MathUtils.lerp(0.55, 1.15, clickFlash);
+        spark.mesh.scale.set(scale, scale * THREE.MathUtils.lerp(1.1, 0.4, 1 - clickFlash), scale);
+        spark.mesh.material.opacity = 0.22 * clickFlash;
+      });
+
+      orbitOffset.subVectors(camera.position, controls.target);
+      orbitSpherical.setFromVector3(orbitOffset);
+
+      const desiredTargetY = Math.max(1.65, ballState.y + 0.35);
+      const followEase = 1 - Math.exp(-5.4 * deltaTime);
+      followTarget.y = THREE.MathUtils.lerp(followTarget.y, desiredTargetY, followEase);
+      controls.target.set(followTarget.x, followTarget.y, followTarget.z);
+
+      desiredCameraPosition.setFromSpherical(orbitSpherical).add(controls.target);
+      camera.position.lerp(desiredCameraPosition, followEase);
+      camera.lookAt(controls.target);
+    }
+
+    function render() {
+      renderer.render(scene, camera);
+    }
+
+    function tick() {
+      timer.update();
+      const deltaTime = timer.getDelta();
+      updatePhysics(deltaTime);
+      updateVisuals(deltaTime);
+      controls.update();
+      render();
+      requestAnimationFrame(tick);
+    }
+
+    function handlePointer(event) {
+      pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+      pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+
+      const hitBall = raycaster.intersectObject(ball, false).length > 0;
+      if (hitBall) {
+        applyImpulse();
+      }
+    }
+
+    function onResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    window.addEventListener("resize", onResize);
+    window.addEventListener("pointerdown", handlePointer);
+
+    updateVisuals(0);
+    render();
+    tick();
+  </script>
+</body>
+</html>
